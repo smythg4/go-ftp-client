@@ -75,3 +75,97 @@ go mod tidy                  # Clean up module dependencies
    ```
 3. Use `requireAuth(conn)` for commands needing authentication
 4. Follow existing patterns for data connection commands vs control-only commands
+
+## Known Issues & Improvements Needed
+
+### Security Issues (High Priority)
+- **Password Exposure**: `main.go:15` prints password in plaintext to console
+- **Path Traversal**: No input validation on user-provided filenames - could allow directory traversal attacks
+- **Non-standard Port**: Hardcoded port 2121 instead of standard FTP port 21 in `ftp_connection.go:25`
+
+### Error Handling (Medium Priority)
+- **Ignored Errors**: `ftp_connection.go:56` ignores error from `net.SplitHostPort`
+- **No Timeouts**: Missing timeout handling on network operations
+- **No Retry Logic**: No retry mechanism for transient network failures
+- **Response Code Validation**: Missing response code validation in most command handlers
+
+### Resource Management (Medium Priority)
+- **Connection Leaks**: Data connections aren't stored/tracked, potential for leaks
+- **Keepalive Cleanup**: `startKeepAlive()` can be called multiple times without proper cleanup
+- **Graceful Shutdown**: No graceful shutdown handling for keepalive goroutine on program exit
+
+### Protocol Compliance (Low Priority)
+- **Transfer Modes**: No handling of different transfer modes (ASCII vs Binary)
+- **EPSV Robustness**: EPSV implementation may not handle all server response formats
+- **Extended Commands**: Missing support for other RFC 3659 extensions (MDTM, MLSD, etc.)
+
+### Code Quality (Low Priority)
+- **Global State**: Global `commandRegistry` variable instead of proper encapsulation
+- **Mixed Responsibilities**: `StartREPL()` handles parsing, execution, and I/O
+- **Missing Tests**: No unit tests for critical parsing functions like `parseAddr()`
+- **Error Messages**: Inconsistent error message formatting across commands
+
+### Recommended Fix Priority
+1. Remove password from console output
+2. Add filename validation/sanitization
+3. Add proper error handling for `net.SplitHostPort`
+4. Implement connection timeout mechanisms
+5. Add response code validation
+6. Refactor global registry into struct-based approach
+
+## Future FTP Server Considerations
+
+### Concurrent File Access Management
+When building the FTP server component, careful consideration of shared filesystem state is critical:
+
+**File-level Race Conditions:**
+- Multiple clients uploading same filename simultaneously
+- Read/write conflicts on active files
+- Partial upload corruption from concurrent access
+
+**Recommended Solutions:**
+- **Atomic Operations**: Use temporary files with atomic rename (`file.txt.tmp.clientID` → `file.txt`)
+- **Exclusive Creation**: Use `os.O_EXCL` flag to prevent simultaneous uploads to same filename
+- **File Locking**: Implement file-level locks or upload tracking map with mutex protection
+- **Protocol Response**: Return `550 File busy` or `550 Permission denied` for conflicts
+
+**Example Implementation Pattern:**
+```go
+type FTPServer struct {
+    activeUploads map[string]string  // filename -> clientID
+    uploadMutex   sync.RWMutex
+    rootDir       string             // jail root directory
+}
+```
+
+### Security: Filesystem Access Control
+Critical security requirement to prevent unauthorized filesystem access:
+
+**Path Traversal Prevention:**
+- **Chroot Jail**: Restrict all client operations to designated directory tree
+- **Path Validation**: Sanitize all file paths to prevent `../` directory traversal
+- **Absolute Path Resolution**: Convert all relative paths to absolute within jail
+- **Symlink Handling**: Decide policy on following symbolic links outside jail
+
+**Recommended Implementation:**
+```go
+func (s *ClientSession) validatePath(userPath string) (string, error) {
+    // Clean and resolve path
+    cleanPath := filepath.Clean(userPath)
+
+    // Ensure path stays within jail
+    absPath := filepath.Join(s.server.rootDir, cleanPath)
+    if !strings.HasPrefix(absPath, s.server.rootDir) {
+        return "", fmt.Errorf("550 Access denied: path outside allowed directory")
+    }
+
+    return absPath, nil
+}
+```
+
+**Additional Security Considerations:**
+- File permission enforcement based on user authentication
+- Disk quota limits per user/session
+- Filename character restrictions (prevent special chars, control chars)
+- Maximum file size limits for uploads
+- Rate limiting for operations and bandwidth

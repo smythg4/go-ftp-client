@@ -435,7 +435,7 @@ func handleHelp(conn *FTPConnection, args []string) error {
 	}
 
 	if !isSuccessResponse(resp) {
-		return fmt.Errorf("PWD failed: %s", strings.TrimSpace(resp))
+		return fmt.Errorf("HELP failed: %s", strings.TrimSpace(resp))
 	}
 
 	fmt.Print(resp)
