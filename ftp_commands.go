@@ -22,7 +22,7 @@ func (pr *ProgressReader) Read(p []byte) (int, error) {
 	pr.read += int64(n)
 	percentage := (float64(pr.read) / float64(pr.total)) * 100
 	fmt.Printf("\rProgress: %d/%d bytes (%.1f%%)", pr.read, pr.total, percentage)
-	time.Sleep(time.Second)
+	time.Sleep(time.Millisecond)
 	return n, err
 }
 
@@ -379,6 +379,9 @@ func handleRetr(conn *FTPConnection, args []string) error {
 func handleStat(conn *FTPConnection, args []string) error {
 	// TODO: handle arguments (acts like list)
 	cmd := "STAT"
+	if len(args) > 0 {
+		cmd = fmt.Sprintf("STAT %s", strings.Join(args, " "))
+	}
 	resp, err := conn.sendCommand(cmd)
 	if err != nil {
 		return err
