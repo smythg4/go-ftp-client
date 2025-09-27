@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"strconv"
@@ -19,20 +20,23 @@ type FTPConnection struct {
 	dataAddr        string
 	keepaliveStop   chan struct{}
 	keepaliveDone   chan struct{}
+	connectionLost  chan struct{}
 }
 
 func NewFTPConnection(host, user, pass string) (FTPConnection, error) {
 	addr := host + ":2121"
-	conn, err := net.Dial("tcp", addr)
+	conn, err := net.DialTimeout("tcp", addr, 30*time.Second)
 	if err != nil {
 		return FTPConnection{}, err
 	}
+
 	return FTPConnection{
 		conn:            conn,
 		user:            user,
 		pass:            pass,
 		reader:          bufio.NewReader(conn),
 		isAuthenticated: false,
+		connectionLost:  make(chan struct{}),
 	}, nil
 }
 
@@ -95,6 +99,9 @@ func parseAddr(pasvResp string) (string, error) {
 }
 
 func (f *FTPConnection) readResponse() (string, error) {
+	// Refresh read deadline for this operation
+	f.conn.SetReadDeadline(time.Now().Add(45 * time.Second))
+
 	var fullResponse strings.Builder
 
 	line, err := f.reader.ReadString('\n')
@@ -124,7 +131,13 @@ func (f *FTPConnection) readResponse() (string, error) {
 }
 
 func (f *FTPConnection) sendCommand(cmd string) (string, error) {
-	fmt.Fprintf(f.conn, "%s\r\n", cmd)
+	// Refresh write deadline for this operation
+	f.conn.SetWriteDeadline(time.Now().Add(15 * time.Second))
+
+	_, err := fmt.Fprintf(f.conn, "%s\r\n", cmd)
+	if err != nil {
+		return "", err
+	}
 
 	return f.readResponse()
 }
@@ -135,7 +148,10 @@ func (f *FTPConnection) startKeepAlive() {
 
 	go func() {
 		defer close(f.keepaliveDone)
-		ticker := time.NewTicker(4 * time.Minute)
+		normalInterval := 30 * time.Second
+		extendedInterval := 2 * time.Minute
+		ticker := time.NewTicker(normalInterval)
+		consecutiveSuccess := 0
 		defer ticker.Stop()
 
 		for {
@@ -144,17 +160,55 @@ func (f *FTPConnection) startKeepAlive() {
 				if f.isAuthenticated {
 					resp, err := f.sendCommand("NOOP")
 					if err != nil {
-						fmt.Printf("\n Keepalive failed: %v\n", err)
+						if f.isConnectionDead(err) {
+							fmt.Printf("\n*** Server connection lost: %v ***\n", err)
+							close(f.connectionLost) // signal to main
+						} else {
+							fmt.Printf("\n Keepalive failed: %v\n", err)
+							consecutiveSuccess = 0
+						}
 						return
 					}
-					fmt.Printf("\nKeepalive: %s", resp)
-					fmt.Print("go-ftp> ")
+					// Clean keepalive display - use \r to overwrite prompt temporarily
+					fmt.Printf("\rKeepalive: %s\ngo-ftp> ", strings.TrimSpace(resp))
+					consecutiveSuccess++
+					if consecutiveSuccess > 5 {
+						ticker.Reset(extendedInterval)
+					} else {
+						ticker.Reset(normalInterval)
+					}
 				}
 			case <-f.keepaliveStop:
 				return
 			}
 		}
 	}()
+}
+
+func (f *FTPConnection) isConnectionDead(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	if err == io.EOF {
+		return true
+	}
+
+	if netErr, ok := err.(net.Error); ok {
+		if netErr.Timeout() {
+			return true
+		}
+	}
+
+	errStr := err.Error()
+	if strings.Contains(errStr, "connection reset") ||
+		strings.Contains(errStr, "broken pipe") ||
+		strings.Contains(errStr, "connection refused") ||
+		strings.Contains(errStr, "network is unreachable") {
+		return true
+	}
+
+	return false
 }
 
 func (f *FTPConnection) stopKeepAlive() {
@@ -180,21 +234,52 @@ func (f *FTPConnection) StartREPL() {
 		return
 	}
 	fmt.Print(welcome)
-	scanner := bufio.NewScanner(os.Stdin)
-	for {
-		fmt.Print("go-ftp> ")
-		scanner.Scan()
-		args := cleanInput(scanner.Text())
-		if len(args) > 0 {
-			if cmd, ok := commandRegistry[args[0]]; ok {
-				err := cmd.callback(f, args[1:])
-				if err != nil {
-					fmt.Printf("Error: %v\n", err)
-				}
+
+	// Create input channel and start input reader goroutine
+	inputChan := make(chan string)
+	go func() {
+		scanner := bufio.NewScanner(os.Stdin)
+		for {
+			if scanner.Scan() {
+				inputChan <- scanner.Text()
 			} else {
-				fmt.Println("Unknown command")
+				close(inputChan)
+				return
 			}
 		}
+	}()
 
+	// Initial prompt
+	fmt.Print("go-ftp> ")
+
+	// Main REPL loop
+	for {
+		select {
+		case <-f.connectionLost:
+			fmt.Printf("*** Shutting down gracefully ***\n")
+			f.stopKeepAlive()
+			f.Close()
+			return
+		case input, ok := <-inputChan:
+			if !ok {
+				// Input channel closed (EOF)
+				fmt.Printf("\nGoodbye!\n")
+				f.stopKeepAlive()
+				f.Close()
+				return
+			}
+			args := cleanInput(input)
+			if len(args) > 0 {
+				if cmd, ok := commandRegistry[args[0]]; ok {
+					err := cmd.callback(f, args[1:])
+					if err != nil {
+						fmt.Printf("Error: %v\n", err)
+					}
+				} else {
+					fmt.Println("Unknown command")
+				}
+			}
+			fmt.Print("go-ftp> ")
+		}
 	}
 }

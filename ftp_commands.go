@@ -22,6 +22,7 @@ func (pr *ProgressReader) Read(p []byte) (int, error) {
 	pr.read += int64(n)
 	percentage := (float64(pr.read) / float64(pr.total)) * 100
 	fmt.Printf("\rProgress: %d/%d bytes (%.1f%%)", pr.read, pr.total, percentage)
+	// added small delay to observe file update progres
 	time.Sleep(time.Millisecond)
 	return n, err
 }

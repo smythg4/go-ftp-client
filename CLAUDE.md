@@ -81,7 +81,7 @@ go mod tidy                  # Clean up module dependencies
 ### Security Issues (High Priority)
 - **Password Exposure**: `main.go:15` prints password in plaintext to console
 - **Path Traversal**: No input validation on user-provided filenames - could allow directory traversal attacks
-- **Non-standard Port**: Hardcoded port 2121 instead of standard FTP port 21 in `ftp_connection.go:25`
+- **Default Port**: Client defaults to port 2121 instead of standard FTP port 21 in `ftp_connection.go:25`
 
 ### Error Handling (Medium Priority)
 - **Ignored Errors**: `ftp_connection.go:56` ignores error from `net.SplitHostPort`
@@ -113,59 +113,29 @@ go mod tidy                  # Clean up module dependencies
 5. Add response code validation
 6. Refactor global registry into struct-based approach
 
-## Future FTP Server Considerations
+## Companion FTP Server
 
-### Concurrent File Access Management
-When building the FTP server component, careful consideration of shared filesystem state is critical:
+This FTP client was developed alongside a companion FTP server implementation. The server implements:
 
-**File-level Race Conditions:**
-- Multiple clients uploading same filename simultaneously
-- Read/write conflicts on active files
-- Partial upload corruption from concurrent access
+**Key Features:**
+- RFC 959 compliant FTP server with concurrent session management
+- Security jail system with path traversal prevention
+- FileManager with concurrent access control for uploads/downloads
+- Complete command set: USER/PASS, PWD/CWD/CDUP, PASV, LIST, RETR/STOR, SIZE, STAT
+- Atomic file uploads using temporary files with rename operations
 
-**Recommended Solutions:**
-- **Atomic Operations**: Use temporary files with atomic rename (`file.txt.tmp.clientID` → `file.txt`)
-- **Exclusive Creation**: Use `os.O_EXCL` flag to prevent simultaneous uploads to same filename
-- **File Locking**: Implement file-level locks or upload tracking map with mutex protection
-- **Protocol Response**: Return `550 File busy` or `550 Permission denied` for conflicts
+**Integration Testing:**
+The client and server are designed to work together for comprehensive FTP testing:
+```bash
+# Terminal 1: Start server (from server directory)
+go build && ./goftpserver
 
-**Example Implementation Pattern:**
-```go
-type FTPServer struct {
-    activeUploads map[string]string  // filename -> clientID
-    uploadMutex   sync.RWMutex
-    rootDir       string             // jail root directory
-}
+# Terminal 2: Connect client (from client directory)
+go build && ./goftp -host localhost:2121 -user anonymous -pass test@example.com
 ```
 
-### Security: Filesystem Access Control
-Critical security requirement to prevent unauthorized filesystem access:
-
-**Path Traversal Prevention:**
-- **Chroot Jail**: Restrict all client operations to designated directory tree
-- **Path Validation**: Sanitize all file paths to prevent `../` directory traversal
-- **Absolute Path Resolution**: Convert all relative paths to absolute within jail
-- **Symlink Handling**: Decide policy on following symbolic links outside jail
-
-**Recommended Implementation:**
-```go
-func (s *ClientSession) validatePath(userPath string) (string, error) {
-    // Clean and resolve path
-    cleanPath := filepath.Clean(userPath)
-
-    // Ensure path stays within jail
-    absPath := filepath.Join(s.server.rootDir, cleanPath)
-    if !strings.HasPrefix(absPath, s.server.rootDir) {
-        return "", fmt.Errorf("550 Access denied: path outside allowed directory")
-    }
-
-    return absPath, nil
-}
-```
-
-**Additional Security Considerations:**
-- File permission enforcement based on user authentication
-- Disk quota limits per user/session
-- Filename character restrictions (prevent special chars, control chars)
-- Maximum file size limits for uploads
-- Rate limiting for operations and bandwidth
+**Architecture Compatibility:**
+- Both use consistent FTP response code handling
+- Client's progress tracking works with server's SIZE command implementation
+- PASV data connection flow optimized for both sides
+- Error handling designed for graceful client-server interaction
