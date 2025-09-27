@@ -50,6 +50,11 @@ func init() {
 			description: "Transfer a copy of the file specified in the pathname from server-DTP",
 			callback:    handleRetr,
 		},
+		"dele": {
+			name:        "dele <pathname>",
+			description: "Delete the file specified in the pathname from server-DTP",
+			callback:    handleDele,
+		},
 		"stor": {
 			name:        "stor <filename>",
 			description: "Upload a file to the server.",

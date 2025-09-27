@@ -303,6 +303,28 @@ func handleSize(conn *FTPConnection, args []string) error {
 	return nil
 }
 
+func handleDele(conn *FTPConnection, args []string) error {
+	if len(args) < 1 {
+		return fmt.Errorf("must provide the filepath of the file you want to delete")
+	}
+
+	if err := requireAuth(conn); err != nil {
+		return err
+	}
+
+	filename := args[0]
+	cmd := fmt.Sprintf("DELE %s", filename)
+	resp, err := conn.sendCommand(cmd)
+	if err != nil {
+		return err
+	}
+	if !strings.HasPrefix(resp, "250") {
+		return fmt.Errorf("DELE failed: %s", strings.TrimSpace(resp))
+	}
+	fmt.Print(resp)
+	return nil
+}
+
 func handleRetr(conn *FTPConnection, args []string) error {
 	if len(args) < 1 {
 		return fmt.Errorf("must provide at least the filepath of the file you want to retrieve")
